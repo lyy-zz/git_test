@@ -258,15 +258,29 @@ def query_file_attr_sync(query_list, concurrent=True):
         logger.warning('invalid query string format: {}'.format(query_str))
 
 
-def query_file_attr_async(query_list, concurrent=True):
-    pass
+def query_file_attr_async(query_list, callback, concurrent=True):
+    callback(query_file_attr_sync(query_list, concurrent=concurrent))
 
 
-def query(query_list, concurrent=True, block=True):
+def query(query_list, concurrent=True, block=True, callback=None):
+    """query file attributes api
+        support async query
+        support mulit thread
+        support three query modes
+    Args:
+        query_list (list): query string list
+        concurrent (bool, optional): open multi-threaded query. Defaults to True.
+        block (bool, optional): sync(block) or async. Defaults to True.
+        callback (func, optional): asynchronous callback function. Defaults to None.
+    Returns:
+        dict: {file_name1: attrs_value_dict, file_name2: ...}
+    """
     if block:
         return query_file_attr_sync(query_list, concurrent=concurrent)
     else:
-        query_file_attr_async(query_list, concurrent=concurrent)
+        if not callback:
+            logger.error('No asynchronous callback function')
+        threading.Thread(target=query_file_attr_async, args=(query_list, callback, concurrent)).start()
 
 
 class TestQueryFileAttrs(unittest.TestCase):

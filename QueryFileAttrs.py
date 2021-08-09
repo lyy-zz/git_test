@@ -35,6 +35,11 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    query_result = query(args.query_str, concurrent=True, block=True)
-    if query_result:
-        display_attrs_query_res(query_result)
+    block = False
+    if block:
+        query_result = query(args.query_str, concurrent=True, block=True)
+        if query_result:
+            display_attrs_query_res(query_result)
+
+    # 异步调用，需传入回调函数用于处理查询结果
+    query(args.query_str, concurrent=True, block=False, callback=display_attrs_query_res)
