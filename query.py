@@ -5,24 +5,32 @@
 # @time    : 2021-07-30
 # @function: query file attributes through the specified string
 # @module : 
-#   traverse_query_str_list: traverse query str list(input), support file query mode
-#   query_file_attrs: query file attrs by single query str
-#       parse_single_query_str: parse single query str, return filename and query attrs list
-#       QueryFileAttrs: single file attrs object, use to get file attributes and print
+#   query
+#       query_file_attr_sync：query file attributes synchronously, and support three query modes
+#       query_file_attr_sync：query file attributes asynchronously, and support three query modes
+#           iterative_query: iterative query, support multi-threading
+#           query_file_attrs: query file attrs by single query str
+#               parse_single_query_str: parse single query str, return filename and query attrs list
+#               QueryFileAttrs: single file attrs object, use to get file attributes and print
 
 import os
 import sys
 import stat
 import math
 import ctypes
-
 import unittest
 import argparse
+import threading
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+
 from logger import logger
 
 
 class QueryFileAttrs():
+    """file attrs oject
+        support querying one or more file attributes
+    """
     def __init__(self, file_name):
         self.file_name = file_name
         self.statinfo = os.stat(file_name)
@@ -115,27 +123,9 @@ class QueryFileAttrs():
         return 0
 
 
-class QueryAttrs():
-    def __init__(self) -> None:
-        pass
-
-    def query_file_attr_sync(query_list, concurrent=True):
-        pass
-
-    def query_file_attr_async(query_list, concurrent=True):
-        pass
-
-    def query(query_list, concurrent=True, block=True):
-        if block:
-            query_file_attr_sync(query_list, concurrent=concurrent)
-        else:
-            query_file_attr_async(query_list, concurrent=concurrent)
-
-
-
 def _get_file_name(file_name_section):
     """get file name from file name section in query str
-
+        check file exists, return None if not exist
     Args:
         file_name_section (str): file name section in single query str
     """
@@ -176,7 +166,7 @@ def parse_single_query_str(query_str):
         return
     file_name = _get_file_name(file_name_section)
     if not file_name:
-        return ()
+        return
     
     # 获取查询属性列表
     query_attrs_list = query_str_split[1:]
@@ -189,6 +179,8 @@ def query_file_attrs(query_str):
 
     Args:
         query_str: single query str
+    Returns:
+        dict: (file_name, attrs_value_dict)
     """
     parse_result = parse_single_query_str(query_str)
     if not parse_result:
@@ -196,35 +188,85 @@ def query_file_attrs(query_str):
     file_name, query_attrs_list = parse_result
     # 初始化属性查询类
     query_obj = QueryFileAttrs(file_name)
-    attrs_value_dict = query_obj.query_file_attrs_value(query_attrs_list, display=True)
-    return attrs_value_dict
+    attrs_value_dict = query_obj.query_file_attrs_value(query_attrs_list)
+    return {file_name: attrs_value_dict}
 
 
-def traverse_query_str_list(query_str_list):
-    """traverse query str list, and support file (bulk) query mode
+def iterative_query(iterable_query_obj, concurrent=True):
+    """iterative query, support multi-threading
+
+    Args:
+        iterable_query_obj (iterable): query string list or query file object
+        concurrent (bool, optional):  open multi-threaded query. Defaults to True.
     """
-    for query_str in query_str_list:
-        # 判断是否为文件批量查询
-        if query_str.lstrip().startswith('Files='):
-            logger.debug('file (bulk) query mode')
-            # 获取文件路径
-            query_str_split = query_str.strip().split()
-            if not query_str_split:
-                logger.warning('invalid query string format: {}'.format(query_str))
+    query_result = {}
+    # 多线程查询
+    if concurrent:
+        executor = ThreadPoolExecutor(os.cpu_count()*2)
+        features = executor.map(query_file_attrs, iterable_query_obj)
+        for feature in features:
+            if not feature:
                 continue
-            file_name_section = query_str_split[0]
-            file_name = _get_file_name(file_name_section)
-            if not file_name:
-                continue
+            query_result.update(feature)
+    else:
+        for query_str in iterable_query_obj:
+            res = query_file_attrs(query_str)
+            if res:
+                query_result.update(res)
 
-            # 遍历文件查询
-            with open(file_name, encoding='utf-8') as f:
-                for _query_str in f:
-                    if not query_file_attrs(_query_str):
-                        continue
-        else: # 常规查询
-            if not query_file_attrs(query_str):
-                continue
+    return query_result
+
+
+def query_file_attr_sync(query_list, concurrent=True):
+    """query file attributes synchronously, and support three query modes
+        query single file: `query_list` length is 1, query string startwith `File=`
+        query multiple file: `query_list` length is greater than 1, each query string startwith `File=`
+        file batch query: `query_list` length is 1, query string startwith `Files=`, example "Files=D:\Files.txt"
+    Args:
+        query_list (list): query string list
+        concurrent (bool, optional): open multi-threaded query. Defaults to True.
+    Returns:
+        dict: {file_name1: attrs_value_dict, file_name2: ...}
+    """
+    if not query_list:
+        logger.warning('query list is empty')
+        return
+
+    # 判断是否为多个文件查询
+    if len(query_list) > 1:
+        logger.debug('multi file query mode')
+        return iterative_query(query_list, concurrent=True)
+
+    query_str = query_list[0].strip() # 查询列表长度为1，取出查询字符串
+    # 判断是否为文件批量查询
+    if query_str.startswith('Files='):
+        logger.debug('file batch query mode')
+        file_name = _get_file_name(query_str)
+        if not file_name:
+            return
+
+        # 遍历文件查询
+        with open(file_name, encoding='utf-8') as f:
+            return iterative_query(f, concurrent=True)
+
+    # 判断是否为单个文件查询
+    elif query_str.startswith('File='): 
+        res = query_file_attrs(query_str)
+        if res:
+            return res
+    else:
+        logger.warning('invalid query string format: {}'.format(query_str))
+
+
+def query_file_attr_async(query_list, concurrent=True):
+    pass
+
+
+def query(query_list, concurrent=True, block=True):
+    if block:
+        return query_file_attr_sync(query_list, concurrent=concurrent)
+    else:
+        query_file_attr_async(query_list, concurrent=concurrent)
 
 
 class TestQueryFileAttrs(unittest.TestCase):
@@ -237,7 +279,7 @@ class TestQueryFileAttrs(unittest.TestCase):
         
     def test_single_query(self):
         query_str = ['File={} AllAttributes'.format(self.test_file_name)]
-        traverse_query_str_list(query_str)
+        query(query_str)
     
     def test_query_file_attrs(self):
         # 属性查询核心功能验证
@@ -259,19 +301,3 @@ class TestQueryFileAttrs(unittest.TestCase):
     
     def tearDown(self) -> None:
         os.remove(self.test_file_name)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='query attributes of files')
-    parser.add_argument('query_str',type=str, nargs='+',
-                        help='query string, include file name and attr')
-    
-
-
-    if not sys.platform.startswith('win'):
-        logger.error('Only supports window platform!')
-        sys.exit()
-    
-    args = parser.parse_args()
-
-    traverse_query_str_list(args.query_str)
